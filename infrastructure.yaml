@@ -1,0 +1,554 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Infraestructura serverless para registro de naves espaciales con autenticación JWT'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'spaceship-registry'
+    Description: 'Nombre del proyecto que se usará como prefijo para los recursos'
+  
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues: [dev, test, prod]
+    Description: 'Ambiente de despliegue'
+
+Resources:
+  # Tabla DynamoDB para naves espaciales
+  SpaceshipTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-spaceships'
+      BillingMode: ON_DEMAND
+      AttributeDefinitions:
+        - AttributeName: spaceship_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: spaceship_id
+          KeyType: HASH
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Tabla DynamoDB para credenciales de usuarios
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-users'
+      BillingMode: ON_DEMAND
+      AttributeDefinitions:
+        - AttributeName: username
+          AttributeType: S
+      KeySchema:
+        - AttributeName: username
+          KeyType: HASH
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Rol IAM para las funciones Lambda
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      # NOTA: Los permisos de DynamoDB deben ser agregados manualmente por el estudiante
+
+  # Función Lambda para obtener naves espaciales (GET)
+  GetSpaceshipsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-get-spaceships'
+      Runtime: python3.13
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          SPACESHIP_TABLE_NAME: !Ref SpaceshipTable
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+
+          def lambda_handler(event, context):
+              # Conectar a DynamoDB
+              dynamodb = boto3.resource('dynamodb')
+              table = dynamodb.Table(os.environ['SPACESHIP_TABLE_NAME'])
+
+              # Obtener el ID de la nave si se proporciona
+              spaceship_id = event.get('pathParameters', {}).get('id') if event.get('pathParameters') else None
+
+              try:
+                  if spaceship_id:
+                      # Obtener una nave específica
+                      response = table.get_item(Key={'spaceship_id': spaceship_id})
+                      if 'Item' in response:
+                          return {
+                              'statusCode': 200,
+                              'headers': {
+                                  'Content-Type': 'application/json',
+                                  'Access-Control-Allow-Origin': '*'
+                              },
+                              'body': json.dumps(dict(response['Item']))
+                          }
+                      else:
+                          return {
+                              'statusCode': 404,
+                              'headers': {
+                                  'Content-Type': 'application/json',
+                                  'Access-Control-Allow-Origin': '*'
+                              },
+                              'body': json.dumps({'error': 'Nave no encontrada'})
+                          }
+                  else:
+                      # Obtener todas las naves
+                      response = table.scan()
+                      items = response.get('Items', [])
+                      return {
+                          'statusCode': 200,
+                          'headers': {
+                              'Content-Type': 'application/json',
+                              'Access-Control-Allow-Origin': '*'
+                          },
+                          'body': json.dumps([dict(item) for item in items])
+                      }
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'headers': {
+                          'Content-Type': 'application/json',
+                          'Access-Control-Allow-Origin': '*'
+                      },
+                      'body': json.dumps({'error': 'Error interno del servidor'})
+                  }
+
+  # Función Lambda para crear naves espaciales (POST)
+  PostSpaceshipsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-post-spaceships'
+      Runtime: python3.13
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          SPACESHIP_TABLE_NAME: !Ref SpaceshipTable
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+
+          def lambda_handler(event, context):
+              # Conectar a DynamoDB
+              dynamodb = boto3.resource('dynamodb')
+              table = dynamodb.Table(os.environ['SPACESHIP_TABLE_NAME'])
+
+              try:
+                  # Obtener datos del body
+                  body = json.loads(event['body'])
+
+                  # Validar campos requeridos
+                  if not all(field in body for field in ['spaceship_id', 'model', 'pilot']):
+                      return {
+                          'statusCode': 400,
+                          'headers': {
+                              'Content-Type': 'application/json',
+                              'Access-Control-Allow-Origin': '*'
+                          },
+                          'body': json.dumps({'error': 'Campos requeridos: spaceship_id, model, pilot'})
+                      }
+
+                  # Crear item para DynamoDB
+                  item = {
+                      'spaceship_id': body['spaceship_id'],
+                      'model': body['model'],
+                      'pilot': body['pilot']
+                  }
+
+                  # Guardar en DynamoDB
+                  table.put_item(Item=item)
+
+                  return {
+                      'statusCode': 201,
+                      'headers': {
+                          'Content-Type': 'application/json',
+                          'Access-Control-Allow-Origin': '*'
+                      },
+                      'body': json.dumps({'message': 'Nave registrada exitosamente', 'spaceship': item})
+                  }
+
+              except json.JSONDecodeError:
+                  return {
+                      'statusCode': 400,
+                      'headers': {
+                          'Content-Type': 'application/json',
+                          'Access-Control-Allow-Origin': '*'
+                      },
+                      'body': json.dumps({'error': 'JSON inválido'})
+                  }
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'headers': {
+                          'Content-Type': 'application/json',
+                          'Access-Control-Allow-Origin': '*'
+                      },
+                      'body': json.dumps({'error': 'Error interno del servidor'})
+                  }
+
+  # Función Lambda para login
+  LoginFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-login'
+      Runtime: python3.13
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          USERS_TABLE_NAME: !Ref UsersTable
+          JWT_SECRET: 'mi-secreto-super-seguro-2024'
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import hmac
+          import base64
+          from datetime import datetime, timedelta
+
+          def lambda_handler(event, context):
+              # Debug: Imprimir el evento recibido
+              print(f"Evento recibido: {json.dumps(event)}")
+              
+              try:
+                  # TODO: Extraer username y password del body del evento
+                  # Pista: Usar json.loads() para parsear event['body']
+                  # Validar que ambos campos estén presentes
+                  
+                  # TODO: Conectar a DynamoDB y buscar el usuario
+                  # Pista: usar boto3.resource('dynamodb') y table.get_item()
+                  # El nombre de la tabla está en os.environ['USERS_TABLE_NAME']
+                  
+                  # TODO: Validar las credenciales
+                  # Comparar la password del usuario con la almacenada en DynamoDB
+                  
+                  # TODO: Si las credenciales son válidas, crear y retornar JWT token
+                  # Usar la función create_jwt_token() proporcionada
+                  
+                  # Por ahora, retornamos un error para que los estudiantes implementen
+                  return {
+                      'statusCode': 501,
+                      'headers': {
+                          'Content-Type': 'application/json',
+                          'Access-Control-Allow-Origin': '*'
+                      },
+                      'body': json.dumps({'error': 'Función no implementada - completar el código'})
+                  }
+                  
+              except Exception as e:
+                  print(f"Error en lambda_handler: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'headers': {
+                          'Content-Type': 'application/json',
+                          'Access-Control-Allow-Origin': '*'
+                      },
+                      'body': json.dumps({'error': f'Error interno: {str(e)}'})
+                  }
+
+          def create_jwt_token(username):
+              """
+              Función auxiliar para crear tokens JWT.
+              Esta función está completa y no necesita modificación.
+              """
+              import base64
+              import json
+              import hmac
+              import hashlib
+              from datetime import datetime, timedelta
+
+              # Header
+              header = {
+                  "alg": "HS256",
+                  "typ": "JWT"
+              }
+
+              # Payload
+              payload = {
+                  "sub": username,
+                  "iat": int(datetime.utcnow().timestamp()),
+                  "exp": int((datetime.utcnow() + timedelta(hours=24)).timestamp()),
+                  "iss": "spaceship-registry"
+              }
+
+              # Codificar header y payload
+              header_encoded = base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip('=')
+              payload_encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')
+
+              # Crear signature
+              message = f"{header_encoded}.{payload_encoded}"
+              secret = os.environ['JWT_SECRET'].encode()
+              signature = hmac.new(secret, message.encode(), hashlib.sha256).digest()
+              signature_encoded = base64.urlsafe_b64encode(signature).decode().rstrip('=')
+
+              return f"{header_encoded}.{payload_encoded}.{signature_encoded}"
+
+  # Lambda Authorizer
+  AuthorizerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-authorizer'
+      Runtime: python3.13
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          JWT_SECRET: 'mi-secreto-super-seguro-2024'
+      Code:
+        ZipFile: |
+          import json
+          import base64
+          import hmac
+          import hashlib
+          import os
+          from datetime import datetime
+
+          def lambda_handler(event, context):
+              try:
+                  # Extraer token del header Authorization
+                  token = event['headers'].get('authorization', '').replace('Bearer ', '')
+                  
+                  if not token:
+                      raise Exception('No token provided')
+
+                  # Validar JWT token
+                  is_valid, payload = validate_jwt_token(token)
+                  
+                  if not is_valid:
+                      raise Exception('Invalid token')
+
+                  # Crear policy de autorización
+                  policy = generate_policy(payload['sub'], 'Allow', event['routeArn'])
+                  
+                  # Agregar context con información del usuario
+                  policy['context'] = {
+                      'username': payload['sub'],
+                      'tokenExp': str(payload.get('exp', ''))
+                  }
+                  
+                  return policy
+
+              except Exception as e:
+                  print(f"Authorization failed: {str(e)}")
+                  # Retornar policy de denegación
+                  return generate_policy('user', 'Deny', event['routeArn'])
+
+          def validate_jwt_token(token):
+              try:
+                  # Dividir el token en sus partes
+                  parts = token.split('.')
+                  if len(parts) != 3:
+                      return False, None
+
+                  header_encoded, payload_encoded, signature_encoded = parts
+
+                  # Decodificar payload
+                  payload_decoded = base64.urlsafe_b64decode(payload_encoded + '==')
+                  payload = json.loads(payload_decoded)
+
+                  # Verificar expiración
+                  if payload.get('exp', 0) < datetime.utcnow().timestamp():
+                      return False, None
+
+                  # Verificar signature
+                  message = f"{header_encoded}.{payload_encoded}"
+                  secret = os.environ['JWT_SECRET'].encode()
+                  expected_signature = hmac.new(secret, message.encode(), hashlib.sha256).digest()
+                  expected_signature_encoded = base64.urlsafe_b64encode(expected_signature).decode().rstrip('=')
+
+                  if signature_encoded != expected_signature_encoded:
+                      return False, None
+
+                  return True, payload
+
+              except Exception as e:
+                  print(f"Token validation error: {str(e)}")
+                  return False, None
+
+          def generate_policy(principal_id, effect, resource):
+              policy = {
+                  'principalId': principal_id,
+                  'policyDocument': {
+                      'Version': '2012-10-17',
+                      'Statement': [
+                          {
+                              'Action': 'execute-api:Invoke',
+                              'Effect': effect,
+                              'Resource': resource
+                          }
+                      ]
+                  }
+              }
+              return policy
+
+  # HTTP API Gateway
+  SpaceshipApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-api'
+      Description: 'API para registro de naves espaciales con autenticación'
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+
+  # Authorizer para API Gateway
+  JWTAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref SpaceshipApi
+      AuthorizerType: REQUEST
+      AuthorizerUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerFunction.Arn}/invocations'
+      Name: !Sub '${ProjectName}-jwt-authorizer'
+      AuthorizerPayloadFormatVersion: '2.0'
+      EnableSimpleResponses: false
+
+  # Permisos para que API Gateway invoque las funciones Lambda
+  GetSpaceshipsPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetSpaceshipsFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub '${SpaceshipApi.ExecutionArn}/*'
+
+  PostSpaceshipsPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PostSpaceshipsFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub '${SpaceshipApi.ExecutionArn}/*'
+
+  LoginPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LoginFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub '${SpaceshipApi.ExecutionArn}/*'
+
+  AuthorizerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AuthorizerFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub '${SpaceshipApi.ExecutionArn}/authorizers/${JWTAuthorizer}'
+
+  # Integraciones Lambda
+  GetSpaceshipsIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref SpaceshipApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetSpaceshipsFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+  PostSpaceshipsIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref SpaceshipApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PostSpaceshipsFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+  LoginIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref SpaceshipApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LoginFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+  # Rutas de la API
+  GetSpaceshipsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SpaceshipApi
+      RouteKey: 'GET /spaceships'
+      Target: !Sub 'integrations/${GetSpaceshipsIntegration}'
+
+  GetSpaceshipByIdRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SpaceshipApi
+      RouteKey: 'GET /spaceships/{id}'
+      Target: !Sub 'integrations/${GetSpaceshipsIntegration}'
+
+  PostSpaceshipsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SpaceshipApi
+      RouteKey: 'POST /spaceships'
+      Target: !Sub 'integrations/${PostSpaceshipsIntegration}'
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref JWTAuthorizer
+
+  LoginRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SpaceshipApi
+      RouteKey: 'POST /login'
+      Target: !Sub 'integrations/${LoginIntegration}'
+
+  # Stage de despliegue
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref SpaceshipApi
+      StageName: !Ref Environment
+      AutoDeploy: true
+
+Outputs:
+  ApiUrl:
+    Description: 'URL base de la API'
+    Value: !Sub 'https://${SpaceshipApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiUrl'
+
+  SpaceshipTableName:
+    Description: 'Nombre de la tabla de naves espaciales'
+    Value: !Ref SpaceshipTable
+    Export:
+      Name: !Sub '${AWS::StackName}-SpaceshipTable'
+
+  UsersTableName:
+    Description: 'Nombre de la tabla de usuarios'
+    Value: !Ref UsersTable
+    Export:
+      Name: !Sub '${AWS::StackName}-UsersTable'
