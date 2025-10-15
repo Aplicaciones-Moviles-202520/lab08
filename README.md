@@ -4,6 +4,8 @@ En este laboratorio exploraremos el concepto de Infrastructure as Code (IaC) uti
 
 El sistema de usuarios implementado es básico y tiene como único propósito demostrar cómo restringir el acceso a ciertos endpoints de la API. Los usuarios no representan pilotos ni otros roles específicos, simplemente son credenciales para controlar el acceso a la funcionalidad de creación de naves espaciales.
 
+> ⚠️ **Importante**: Este laboratorio provee una sección de troubleshooting para enfrentar los problemas que está considerado vayan a surgir durante el desarrollo. Las fallas esperadas son parte del aprendizaje y se espera que los estudiantes las resuelvan.
+
 ## Marco Teórico
 
 ### ¿Qué es Infrastructure as Code (IaC)?
@@ -107,6 +109,8 @@ Antes de comenzar, asegúrate de tener:
 3. Espera a que el status cambie a **CREATE_COMPLETE**
 4. Si hay errores, aparecerán en la pestaña Events con detalles específicos
 
+> ⚠️ **Nota**: El template proveído TIENE errores que se espera puedan ser resueltos por los estudiantes. Son 6 las líneas de infrastructure.yaml que deben ser corregidas para que pueda desplegarse la infraestructura correctamente.
+
 ## 2. Configuración inicial de datos
 
 ### Paso 2.1: Crear usuarios manualmente
@@ -203,6 +207,7 @@ Antes de implementar la función de login, vamos a probar que las funciones GET 
 Para hacer pruebas más estructuradas:
 
 1. **Abre Postman** (web o aplicación de escritorio)
+
 2. **Crea una nueva colección** llamada "Spaceship Registry CloudFormation API"
 
 3. **Crear request para obtener todas las naves**:
@@ -580,12 +585,6 @@ Esta sección consolidada te ayudará a resolver los problemas más comunes que 
        ]
    }
    ```
-
-#### Error: "User is not authorized to perform..."
-**Síntoma**: Tu usuario de AWS no puede realizar ciertas acciones
-**Solución**:
-1. Contacta al administrador de AWS Academy
-2. Verifica que tienes permisos para Lambda, DynamoDB, API Gateway, CloudFormation
 
 ### C. Problemas de Desarrollo Lambda
 
